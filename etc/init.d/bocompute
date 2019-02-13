@@ -1,0 +1,91 @@
+#!/bin/bash
+
+### BEGIN INIT INFO
+# Provides:        ckpl
+# Required-Start:  $network $remote_fs $syslog
+# Required-Stop:   $network $remote_fs $syslog
+# Default-Start:   2 3 4 5
+# Default-Stop:    0 1 6
+# Short-Description: Start Blueocean node 
+### END INIT INFO
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/lib/klibc/bin
+
+. /lib/lsb/init-functions
+
+# Zmienne:
+BOCOMPUTE=bocompute
+
+# Sprawdzanie czy nod jest czescia klastra Blueocean SWARM
+function isSwarmNode(){
+    if [ "$(docker info | grep Swarm | sed 's/Swarm: //g')" == "active" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Pobranie aktualnej konfiguracji swarm:
+function getManagerSwarm() {
+	mfsmount -H mfsmaster -S /blueocean/opt/software/Blueocean/Configs /opt >& /dev/null
+	SWARMMAN=$(cat /opt/swarm_manager.list) 
+	umount /opt
+}
+
+
+case $1 in
+        start)
+		isSwarmNode
+		Status=$?
+		if [[ $Status = 0 ]]; then
+				echo "Nod jest czescia klastra Bluecoean SWARM "
+			else
+				log_daemon_msg "Add node to Blueocan Docker SWARM"
+				echo "Nod nie jest czescia klastra Blueocean SWARM, podejmuje probe dolaczenia:"
+
+				# Wybranie dzialajacego managera swarm:
+				getManagerSwarm
+				for MANAGER in $(echo $SWARMMAN); do
+					nmap -p 2377 $MANAGER |grep open > /dev/null
+					MANAGER_STATUS=$?
+					if [ $MANAGER_STATUS -eq 0 ]; then
+						echo "Aktywny Manager Blueceoan SWARM: $MANAGER"
+						break 
+					fi 
+				done
+
+				# Dolaczenie noda do Klastra Blueocean SWARM:
+				log_daemon_msg "Add node to Blueocean SWARM klaster"
+				docker swarm join --token SWMTKN-1-47qvoqne5tiyailbxb41xe767mhsfim9bs5e5ahniabnxlm7hv-1oojwf1ijsi43em2pq74odxou $MANAGER:2377
+				status=$?
+                                log_end_msg $status
+		fi
+
+		# Uruchomienie kontenera:
+		if ! (docker ps -a|grep -q ${BOCOMPUTE}); then
+				log_daemon_msg "Build  and start ${BOCOMPUTE} container"
+				docker run -dt --name bocompute -h $(hostname -f) --shm-size=1g --device /dev/fuse -v /etc/aliases:/etc/aliases -v /etc/msmtprc:/etc/msmtprc --privileged -p 6445:6445 --net cluster_network --ip $(echo 10.0.0.$(hostname -i | cut -d "." -f4)) bockpl/bocompute
+				status=$?
+                		log_end_msg $status
+			else
+				log_daemon_msg "Start ${BOCOMPUTE} container"
+				docker start ${BOCOMPUTE}
+				status=$?
+                		log_end_msg $status
+		fi
+		;;
+	stop)
+		log_daemon_msg "Stop ${BOCOMPUTE} container" 
+                docker stop ${BOCOMPUTE}
+                status=$?
+                log_end_msg $status
+		;;
+	restart|force-reload)
+                $0 stop && sleep 2 && $0 start
+                ;;
+	 *)
+                echo "Usage: $0 {start|stop|restart}"
+                exit 2
+                ;;
+esac
+
